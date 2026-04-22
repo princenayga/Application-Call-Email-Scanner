@@ -33,8 +33,9 @@ MY_EMAIL                = "pnayga@science-corps.org"
 OUTPUT_FOLDER           = "output"
 EXCEL_FILENAME          = "fellowship_replies.xlsx"
 
-# Claude API — set ANTHROPIC_API_KEY as an environment variable, or paste it here.
-ANTHROPIC_API_KEY       = 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
+# Claude API — set ANTHROPIC_API_KEY as an environment variable (recommended),
+# or paste your key as a string here only on a machine you control and never commit.
+ANTHROPIC_API_KEY       = os.environ.get("ANTHROPIC_API_KEY", "your-api-key-here")
 CLAUDE_MODEL            = "claude-opus-4-6"
 CLASSIFICATION_BATCH_SIZE = 20   # emails per Claude API call (tune if you hit token limits)
 API_CALL_DELAY_SECONDS  = 1.0    # polite pause between batch calls

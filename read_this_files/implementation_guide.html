@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Science Corps Fellowship Scanner — Implementation Guide</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', Arial, sans-serif;
+    font-size: 13px;
+    color: #1a1a1a;
+    background: #fff;
+    padding: 40px 52px;
+    max-width: 900px;
+    margin: auto;
+    line-height: 1.6;
+  }
+
+  /* ── Cover ── */
+  .cover {
+    text-align: center;
+    padding: 60px 0 50px;
+    border-bottom: 3px solid #1F4E79;
+    margin-bottom: 40px;
+    page-break-after: always;
+  }
+  .cover-org  { font-size: 13px; color: #555; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 16px; }
+  .cover-title { font-size: 28px; font-weight: bold; color: #1F4E79; margin-bottom: 10px; line-height: 1.3; }
+  .cover-sub  { font-size: 15px; color: #444; margin-bottom: 30px; }
+  .cover-meta { font-size: 12px; color: #777; }
+
+  /* ── Table of contents ── */
+  .toc { background: #f0f5fb; border-radius: 8px; padding: 24px 30px; margin-bottom: 36px; }
+  .toc h2 { font-size: 14px; color: #1F4E79; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.6px; }
+  .toc ol  { padding-left: 20px; }
+  .toc li  { margin-bottom: 5px; font-size: 13px; color: #333; }
+
+  /* ── Part headings ── */
+  .part {
+    background: #1F4E79;
+    color: #fff;
+    font-size: 15px;
+    font-weight: bold;
+    padding: 10px 18px;
+    border-radius: 6px;
+    margin: 36px 0 20px;
+    letter-spacing: 0.3px;
+    page-break-before: always;
+  }
+  .part:first-of-type { page-break-before: avoid; }
+
+  /* ── Section headings ── */
+  h2 {
+    font-size: 15px;
+    color: #1F4E79;
+    margin: 28px 0 10px;
+    padding-bottom: 5px;
+    border-bottom: 2px solid #d0dff0;
+  }
+  h3 {
+    font-size: 13px;
+    color: #2E75B6;
+    margin: 18px 0 7px;
+    font-weight: bold;
+  }
+
+  /* ── Step blocks ── */
+  .step {
+    border-left: 4px solid #2E75B6;
+    background: #f7faff;
+    border-radius: 0 6px 6px 0;
+    padding: 14px 18px;
+    margin: 14px 0;
+    page-break-inside: avoid;
+  }
+  .step-num {
+    display: inline-block;
+    background: #1F4E79;
+    color: #fff;
+    border-radius: 50%;
+    width: 24px; height: 24px;
+    font-size: 12px;
+    font-weight: bold;
+    text-align: center;
+    line-height: 24px;
+    margin-right: 8px;
+    flex-shrink: 0;
+  }
+  .step-title {
+    font-weight: bold;
+    font-size: 13.5px;
+    color: #1F4E79;
+    margin-bottom: 6px;
+  }
+  .step p, .step li { color: #333; margin-bottom: 4px; }
+  .step ul, .step ol { padding-left: 20px; margin-top: 6px; }
+  .step li { margin-bottom: 3px; }
+
+  /* ── Code / command blocks ── */
+  code {
+    font-family: 'Consolas', 'Courier New', monospace;
+    background: #eef2f8;
+    border: 1px solid #c8d6e8;
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 12px;
+    color: #1a3a5c;
+  }
+  .cmd-block {
+    font-family: 'Consolas', 'Courier New', monospace;
+    background: #1a2436;
+    color: #b0d4ff;
+    border-radius: 6px;
+    padding: 12px 16px;
+    font-size: 12px;
+    margin: 10px 0;
+    white-space: pre;
+    overflow-x: auto;
+  }
+
+  /* ── Callout boxes ── */
+  .callout {
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin: 12px 0;
+    font-size: 13px;
+    page-break-inside: avoid;
+  }
+  .callout-tip    { background: #e8f5e9; border-left: 4px solid #2e7d32; color: #1b4f20; }
+  .callout-warn   { background: #fff8e1; border-left: 4px solid #f57f17; color: #5a3a00; }
+  .callout-info   { background: #e3f0fb; border-left: 4px solid #1F4E79; color: #1a3a5c; }
+  .callout-danger { background: #fde8e8; border-left: 4px solid #c62828; color: #6a1010; }
+  .callout strong { display: block; margin-bottom: 3px; }
+
+  /* ── File reference table ── */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0;
+    font-size: 12.5px;
+  }
+  th {
+    background: #2E75B6;
+    color: #fff;
+    text-align: left;
+    padding: 8px 12px;
+    font-weight: bold;
+  }
+  td { padding: 8px 12px; border-bottom: 1px solid #dde6f0; vertical-align: top; }
+  tr:nth-child(even) td { background: #f4f8fc; }
+  td:first-child { font-family: monospace; font-size: 12px; color: #1a3a5c; white-space: nowrap; }
+
+  /* ── Category color legend ── */
+  .legend { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+  .chip {
+    border-radius: 12px;
+    padding: 3px 12px;
+    font-size: 11.5px;
+    font-weight: bold;
+    border: 1px solid rgba(0,0,0,0.08);
+  }
+
+  /* ── Footer ── */
+  .footer {
+    margin-top: 48px;
+    padding-top: 14px;
+    border-top: 1px solid #ccc;
+    font-size: 11px;
+    color: #888;
+    text-align: center;
+  }
+
+  @media print {
+    body { padding: 20px 30px; }
+    .part { page-break-before: always; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════════════ COVER -->
+<div class="cover">
+  <div class="cover-org">Science Corps — Philippine Manager's Office</div>
+  <div class="cover-title">Fellowship Scanner<br>Implementation Guide</div>
+  <div class="cover-sub">Step-by-step workflow for the email blast analytics pipeline</div>
+  <div class="cover-meta">Prepared for: Prince Nayga &nbsp;|&nbsp; April 22, 2026</div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════ TOC -->
+<div class="toc">
+  <h2>Contents</h2>
+  <ol>
+    <li>What This System Does</li>
+    <li>One-Time Setup (do this once per machine)</li>
+    <li>Before Every Blast — Prepare Your Listserv</li>
+    <li>Running the Scanner After a Blast</li>
+    <li>Reading the Excel Report</li>
+    <li>The Action Plan — What to Do Next</li>
+    <li>Generating the Positive Replies Outreach PDF</li>
+    <li>Cleaning the Listserv for the Next Cycle</li>
+    <li>Full File Reference</li>
+    <li>Quick-Reference Checklist</li>
+  </ol>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════ PART 0 -->
+<div class="part">1 &nbsp;—&nbsp; What This System Does</div>
+
+<p>After you send a fellowship blast email to your academic listserv, this system automatically:</p>
+<ul style="padding-left:22px;margin:10px 0;">
+  <li>Connects to your Gmail and finds every reply (inbox, updates, spam, and bounce folders)</li>
+  <li>Uses the Claude AI to classify each reply into a category (Positive, Bounce, Declined, etc.)</li>
+  <li>Tracks which listserv addresses never replied at all</li>
+  <li>Produces a colour-coded Excel report with an Action Plan tab telling you exactly what to do</li>
+  <li>Generates a draft outreach email for every positive reply</li>
+  <li>Outputs a cleaned listserv (dead bounces removed) ready for the next blast</li>
+</ul>
+
+<div class="callout callout-info">
+  <strong>Three scripts, three outputs</strong>
+  <code>fellowship_scanner.py</code> → main Excel report &nbsp;|&nbsp;
+  <code>positive_replies_report.py</code> → outreach HTML/PDF &nbsp;|&nbsp;
+  <code>clean_listserv.py</code> → cleaned listserv Excel
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════ PART 1 -->
+<div class="part">2 &nbsp;—&nbsp; One-Time Setup</div>
+
+<p>Do this once on each machine you use. Skip any step you have already completed.</p>
+
+<div class="step">
+  <div class="step-title"><span class="step-num">1</span> Get the project files</div>
+  <p>Clone or copy the project folder to your Desktop (or any folder you prefer).</p>
+  <p>The folder should contain: <code>fellowship_scanner.py</code>, <code>clean_listserv.py</code>,
+     <code>positive_replies_report.py</code>, <code>requirements.txt</code></p>
+</div>
+
+<div class="step">
+  <div class="step-title"><span class="step-num">2</span> Create and activate a Python virtual environment</div>
+  <p>Open a terminal in the project folder and run:</p>
+  <div class="cmd-block">python -m venv venv
+venv\Scripts\activate</div>
+  <p>Your prompt will show <code>(venv)</code> when the environment is active. Always activate it before running any script.</p>
+</div>
+
+<div class="step">
+  <div class="step-title"><span class="step-num">3</span> Install dependencies</div>
+  <div class="cmd-block">pip install -r requirements.txt</div>
+  <p>This installs the Google API client, Anthropic Claude client, and openpyxl (Excel). Do this once; no need to repeat unless you reset the venv.</p>
+</div>
+
+<div class="step">
+  <div class="step-title"><span class="step-num">4</span> Get your Google OAuth credentials</div>
+  <ol>
+    <li>Go to <strong>console.cloud.google.com</strong> and sign in with <code>pnayga@science-corps.org</code></li>
+    <li>Select your project (or create one named <em>Fellowship Scanner</em>)</li>
+    <li>Go to <strong>APIs &amp; Services → Library</strong> → enable <strong>Gmail API</strong></li>
+    <li>Go to <strong>APIs &amp; Services → Credentials</strong> → click <strong>Create Credentials → OAuth client ID</strong></li>
+    <li>Choose <strong>Desktop App</strong>, name it anything, click <strong>Create</strong></li>
+    <li>Click the download icon → save the file as <code>credentials.json</code> in the project folder</li>
+  </ol>
+  <div class="callout callout-danger" style="margin-top:10px;">
+    <strong>Never share or commit credentials.json</strong>
+    This file is your private Google login key. Keep it only on your machine.
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-title"><span class="step-num">5</span> Set your Anthropic API key</div>
+  <p>In the terminal (with venv active), run:</p>
+  <div class="cmd-block">export ANTHROPIC_API_KEY="sk-ant-your-key-here"</div>
+  <p>Get your key from <strong>console.anthropic.com → API Keys</strong>. The key is only needed while the terminal session is open; you will need to re-export it each time you open a new terminal.</p>
+</div>
+
+<div class="step">
+  <div class="step-title"><span class="step-num">6</span> First run — browser login</div>
+  <p>The first time you run the scanner, a browser window will open asking you to sign in to Gmail. After you approve, a <code>token.json</code> file is saved. Future runs skip the browser login automatically.</p>
+  <div class="callout callout-warn" style="margin-top:8px;">
+    <strong>token.json is private — do not share or commit it.</strong>
+    If it is ever lost, just delete it and the next run will prompt you to log in again.
+  </div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════ PART 2 -->
+<div class="part">3 &nbsp;—&nbsp; Before Every Blast — Prepare Your Listserv</div>
+
+<div class="step">
+  <div class="step-title"><span class="step-num">1</span> Export your mailing list as a CSV</div>
+  <p>Create or update a CSV file with one email address per line. Save it in the project folder.</p>
+  <p>The current file is: <code>Filtered Listserv for Feb 2026 Applications - Sheet1.csv</code></p>
+  <p>For a new cycle, either update this file or change the <code>LISTSERV_CSV</code> setting at the top of <code>fellowship_scanner.py</code>.</p>
+</div>
+
+<div class="step">
+  <div class="step-title"><span class="step-num">2</span> Update the CONFIG block in fellowship_scanner.py</div>
+  <p>Open <code>fellowship_scanner.py</code> in any text editor and update these values near the top:</p>
+  <table>
+    <tr><th>Setting</th><th>What to change</th></tr>
+    <tr><td>SEARCH_AFTER_DATE</td><td>Set to the date you sent the blast (YYYY/MM/DD). Emails before this date are ignored.</td></tr>
+    <tr><td>LISTSERV_CSV</td><td>Filename of your current listserv CSV.</td></tr>
+    <tr><td>CC_EMAILS</td><td>Add any addresses you CC'd on the blast — prevents them from appearing as false positives.</td></tr>
+  </table>
+</div>
+
+<div class="step">
+  <div class="step-title"><span class="step-num">3</span> Send the blast (BCC all listserv addresses)</div>
+  <p>Send your fellowship email using BCC for all listserv addresses. Wait at least 24–48 hours before running the scanner so bounces and auto-replies have time to arrive.</p>
+  <div class="callout callout-tip" style="margin-top:8px;">
+    <strong>Tip:</strong> If any recipient replies asking you to contact them directly (not via BCC), note their address — you will handle it in Step 6 of the Action Plan.
+  </div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════ PART 3 -->
+<div class="part">4 &nbsp;—&nbsp; Running the Scanner After a Blast</div>
+
+<div class="step">
+  <div class="step-title"><span class="step-num">1</span> Open a terminal in the project folder</div>
+  <p>Activate the virtual environment:</p>
+  <div class="cmd-block">venv\Scripts\activate</div>
+</div>
+
+<div class="step">
+  <div class="step-title"><span class="step-num">2</span> Set your API key (if not already set)</div>
+  <div class="cmd-block">export ANTHROPIC_API_KEY="sk-ant-your-key-here"</div>
+</div>
+
+<div class="step">
+  <div class="step-title"><span class="step-num">3</span> Run the scanner</div>
+  <div class="cmd-block">python fellowship_scanner.py</div>
+  <p>The script will:</p>
+  <ul>
+    <li>Search Gmail across all folders (inbox, updates, spam, bounces)</li>
+    <li>Run a batch search for any reply from your 800+ listserv addresses</li>
+    <li>Send unclassified emails to Claude AI in batches of 20</li>
+    <li>Build the Excel report and Action Plan tab</li>
+  </ul>
+  <p>Runtime is typically <strong>5–15 minutes</strong> depending on the number of replies.</p>
+</div>
+
+<div class="step">
+  <div class="step-title"><span class="step-num">4</span> Re-running is safe</div>
+  <p>You can run the scanner multiple times. It skips rows already in the Excel file (matched by email address + date) and only adds new entries. The Action Plan and Summary tabs are always rebuilt fresh.</p>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════ PART 4 -->
+<div class="part">5 &nbsp;—&nbsp; Reading the Excel Report</div>
+
+<p>The report is saved at <code>output/fellowship_replies.xlsx</code> and has three sheets:</p>
+
+<h3>Sheet 1 — Action Plan (open this first)</h3>
+<p>A prioritised to-do list rebuilt every run. See Part 6 for details.</p>
+
+<h3>Sheet 2 — Summary</h3>
+<p>Total counts by classification category and Gmail category. Use this for a quick overview.</p>
+
+<h3>Sheet 3 — Replies</h3>
+<p>Every email and listserv address, one row each, colour-coded:</p>
+
+<div class="legend">
+  <span class="chip" style="background:#C6EFCE;">Positive / Interested</span>
+  <span class="chip" style="background:#FFFF99;">Has a Question</span>
+  <span class="chip" style="background:#BDD7EE;">Application Submitted</span>
+  <span class="chip" style="background:#FFEB9C;">No Longer Works There</span>
+  <span class="chip" style="background:#FFC7CE;">Bounce / Delivery Failure</span>
+  <span class="chip" style="background:#FF0000;color:#fff;">Declined / Not Interested</span>
+  <span class="chip" style="background:#E2CFFF;">Auto-Reply (OOO)</span>
+  <span class="chip" style="background:#D9D9D9;">No Reply</span>
+</div>
+
+<div class="callout callout-info" style="margin-top:12px;">
+  <strong>Important — No Reply count</strong>
+  ~700 No Reply rows is normal and expected. The listserv has 815 addresses;
+  a 10–15% response rate (including bounces and auto-replies) is typical for a cold academic blast.
+  The No Reply rows are not a data error.
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════ PART 5 -->
+<div class="part">6 &nbsp;—&nbsp; The Action Plan — What to Do Next</div>
+
+<p>Open the <strong>Action Plan</strong> tab in the Excel report and work through each step in order.</p>
+
+<div class="step">
+  <div class="step-title"><span class="step-num" style="background:#1A7A3C;">1</span> STEP 1 — FOLLOW UP NOW &nbsp;<em>(Positive, Has a Question, Application Submitted)</em></div>
+  <ul>
+    <li><strong>Positive / Interested:</strong> Reply with the application link, deadlines, and next steps. Then run <code>positive_replies_report.py</code> (see Part 7) to get a personalised outreach email asking them to refer colleagues.</li>
+    <li><strong>Has a Question:</strong> Read the Claude summary and reply directly to their question.</li>
+    <li><strong>Application Submitted:</strong> Acknowledge receipt and add them to your applicant tracker.</li>
+  </ul>
+</div>
+
+<div class="step">
+  <div class="step-title"><span class="step-num" style="background:#BF6A00;">2</span> STEP 2 — SPECIAL ACTION NEEDED &nbsp;<em>(No Longer Works There, Declined)</em></div>
+  <ul>
+    <li><strong>No Longer Works There:</strong> Read the Claude summary — they may have provided a forwarding contact or new colleague's email. If so, add that new address to your listserv for next cycle and remove the old one.</li>
+    <li><strong>Declined / Not Interested:</strong> Read the summary carefully.
+      <ul>
+        <li>If they said <em>"post to our board / listserv"</em> → post the opportunity there as instructed, do not re-blast.</li>
+        <li>If they said <em>"don't use BCC, send directly"</em> → resend a direct, individual email to that address.</li>
+        <li>If they gave a plain no → acknowledge and move on, remove from future blasts.</li>
+      </ul>
+    </li>
+  </ul>
+</div>
+
+<div class="step">
+  <div class="step-title"><span class="step-num" style="background:#595959;">3</span> STEP 3 — INCLUDE IN NEXT BLAST &nbsp;<em>(No Reply, Auto-Reply)</em></div>
+  <p>No action needed now. These addresses are valid — people either did not see the email or were out of office. They will be included in the cleaned listserv for the next cycle automatically.</p>
+</div>
+
+<div class="step">
+  <div class="step-title"><span class="step-num" style="background:#9C0006;">4</span> STEP 4 — DEAD ADDRESSES — REMOVE FROM LIST &nbsp;<em>(Bounce)</em></div>
+  <p>These email addresses failed to deliver. Run <code>clean_listserv.py</code> (Part 8) to strip them from your list. No other action needed.</p>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════ PART 6 -->
+<div class="part">7 &nbsp;—&nbsp; Generating the Positive Replies Outreach</div>
+
+<div class="step">
+  <div class="step-title"><span class="step-num">1</span> Run the script</div>
+  <div class="cmd-block">python positive_replies_report.py</div>
+  <p>This reads <code>output/fellowship_replies.xlsx</code> and generates <code>output/positive_replies_outreach.html</code>.</p>
+</div>
+
+<div class="step">
+  <div class="step-title"><span class="step-num">2</span> Convert to PDF</div>
+  <ol>
+    <li>Open <code>output/positive_replies_outreach.html</code> in Chrome or Edge</li>
+    <li>Press <strong>Ctrl + P</strong></li>
+    <li>Change destination to <strong>Save as PDF</strong></li>
+    <li>Click <strong>Save</strong></li>
+  </ol>
+</div>
+
+<div class="step">
+  <div class="step-title"><span class="step-num">3</span> Review and personalise before sending</div>
+  <p>Each card in the report shows:</p>
+  <ul>
+    <li>The sender's name, email, institution, and date</li>
+    <li>Claude's summary of what they actually said in their reply</li>
+    <li>A ready-to-send draft email — personalised by first name — thanking them and asking if they know any STEM PhD graduates who might be interested</li>
+  </ul>
+  <div class="callout callout-tip" style="margin-top:8px;">
+    <strong>Tip:</strong> The draft is a starting point. Adjust the tone for each person if you have extra context from their reply (e.g., if they mentioned a specific colleague by name, reference that).
+  </div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════ PART 7 -->
+<div class="part">8 &nbsp;—&nbsp; Cleaning the Listserv for the Next Cycle</div>
+
+<div class="step">
+  <div class="step-title"><span class="step-num">1</span> Run the cleaner</div>
+  <div class="cmd-block">python clean_listserv.py</div>
+  <p>This generates <code>output/cleaned_listserv.xlsx</code> with three sheets:</p>
+  <table>
+    <tr><th>Sheet</th><th>Contents</th><th>What to do with it</th></tr>
+    <tr><td>Cleaned Listserv</td><td>Addresses with confirmed dead bounces removed</td><td>Use this as your listserv for the next blast</td></tr>
+    <tr><td>Needs Review</td><td>No Longer Works There + Declined rows with summaries</td><td>Read each row and decide: remove, update, or follow up</td></tr>
+    <tr><td>Removed (Bounces)</td><td>Confirmed dead addresses</td><td>Keep for your records; do not re-add to any list</td></tr>
+  </table>
+</div>
+
+<div class="step">
+  <div class="step-title"><span class="step-num">2</span> Manually process the Needs Review sheet</div>
+  <ul>
+    <li>For <strong>No Longer Works There</strong> — check if they gave a new contact in their reply. If yes, add the new address to the Cleaned Listserv sheet.</li>
+    <li>For <strong>Declined</strong> — if they said "don't BCC us", add a note and remove them. If they said "post to our board", that is a one-time action (already done in Step 6).</li>
+  </ul>
+</div>
+
+<div class="step">
+  <div class="step-title"><span class="step-num">3</span> Export the Cleaned Listserv for blasting</div>
+  <p>When the Cleaned Listserv sheet is final:</p>
+  <ol>
+    <li>Open <code>output/cleaned_listserv.xlsx</code></li>
+    <li>Go to the <strong>Cleaned Listserv</strong> sheet</li>
+    <li>Copy the <strong>Email Address</strong> column (column B)</li>
+    <li>Paste into your email client's BCC field or your mail merge tool</li>
+  </ol>
+</div>
+
+<div class="step">
+  <div class="step-title"><span class="step-num">4</span> Update LISTSERV_CSV for the next cycle</div>
+  <p>Before the next blast, save the final cleaned email list as a new CSV file (one address per line) and update <code>LISTSERV_CSV</code> in the CONFIG block of <code>fellowship_scanner.py</code>.</p>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════ PART 8 -->
+<div class="part">9 &nbsp;—&nbsp; Full File Reference</div>
+
+<table>
+  <tr><th>File</th><th>Purpose</th><th>Edit / commit?</th></tr>
+  <tr><td>fellowship_scanner.py</td><td>Main scanner — all Gmail + Claude + Excel logic</td><td>Edit CONFIG block only; commit freely</td></tr>
+  <tr><td>clean_listserv.py</td><td>Generates cleaned listserv Excel from the report</td><td>No edits needed; commit freely</td></tr>
+  <tr><td>positive_replies_report.py</td><td>Generates outreach HTML for positive replies</td><td>Edit TEMPLATE if you want a different email draft; commit freely</td></tr>
+  <tr><td>requirements.txt</td><td>Python package list</td><td>No edits needed; commit freely</td></tr>
+  <tr><td>credentials.json</td><td>Google OAuth2 key</td><td><strong>NEVER commit.</strong> Keep locally only.</td></tr>
+  <tr><td>token.json</td><td>Saved Gmail session</td><td><strong>NEVER commit.</strong> Delete to force re-login.</td></tr>
+  <tr><td>Filtered Listserv *.csv</td><td>Your current mailing list (one email per line)</td><td>Update each cycle; keep out of public repos.</td></tr>
+  <tr><td>output/fellowship_replies.xlsx</td><td>Main colour-coded report (Summary, Action Plan, Replies sheets)</td><td>Auto-generated; do not manually edit.</td></tr>
+  <tr><td>output/cleaned_listserv.xlsx</td><td>Filtered listserv for next blast</td><td>Auto-generated; manually adjust Needs Review sheet.</td></tr>
+  <tr><td>output/positive_replies_outreach.html</td><td>Outreach draft for positive replies</td><td>Auto-generated; print to PDF in Chrome.</td></tr>
+</table>
+
+
+<!-- ══════════════════════════════════════════════════════ PART 9 -->
+<div class="part">10 &nbsp;—&nbsp; Quick-Reference Checklist</div>
+
+<p>Print this page and check off each item every cycle.</p>
+
+<h3>One-time setup (first machine only)</h3>
+<ul style="padding-left:22px;line-height:2;">
+  <li>&#9744; Create Python virtual environment and install requirements.txt</li>
+  <li>&#9744; Download credentials.json from Google Cloud Console</li>
+  <li>&#9744; Run scanner once to trigger Gmail browser login (token.json saved)</li>
+</ul>
+
+<h3>Before every blast</h3>
+<ul style="padding-left:22px;line-height:2;">
+  <li>&#9744; Update <code>SEARCH_AFTER_DATE</code> in fellowship_scanner.py to today's date</li>
+  <li>&#9744; Update <code>LISTSERV_CSV</code> to point to the current cleaned listserv file</li>
+  <li>&#9744; Confirm <code>CC_EMAILS</code> includes anyone you will CC (not BCC)</li>
+  <li>&#9744; Send blast via BCC</li>
+  <li>&#9744; Wait 24–48 hours for replies and bounces to arrive</li>
+</ul>
+
+<h3>After every blast (run in this order)</h3>
+<ul style="padding-left:22px;line-height:2;">
+  <li>&#9744; <code>python fellowship_scanner.py</code> — generates Excel report</li>
+  <li>&#9744; Open Action Plan tab — work through Step 1 (follow ups) and Step 2 (special cases)</li>
+  <li>&#9744; <code>python positive_replies_report.py</code> — generate outreach HTML, print to PDF</li>
+  <li>&#9744; Send personalised thank-you + referral request to each positive reply</li>
+  <li>&#9744; <code>python clean_listserv.py</code> — generate cleaned listserv</li>
+  <li>&#9744; Review Needs Review sheet, adjust cleaned list manually if needed</li>
+  <li>&#9744; Save final cleaned email list as new CSV for next cycle</li>
+</ul>
+
+<div class="callout callout-tip" style="margin-top:20px;">
+  <strong>Tip — Re-running the scanner</strong>
+  You can run <code>fellowship_scanner.py</code> multiple times safely. New replies are appended;
+  existing rows are never duplicated. Run it again after a few days to catch late replies.
+</div>
+
+<div class="footer">
+  Science Corps Fellowship Scanner &nbsp;|&nbsp; Implementation Guide &nbsp;|&nbsp; April 22, 2026 &nbsp;|&nbsp; Prince Nayga &lt;pnayga@science-corps.org&gt;
+</div>
+
+</body>
+</html>

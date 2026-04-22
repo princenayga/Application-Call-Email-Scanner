@@ -1,0 +1,753 @@
+"""
+Science Corps Fellowship Scanner
+=================================
+Fully-automated pipeline — no copy-paste required.
+
+Workflow
+--------
+1. Run TWO Gmail searches and merge results:
+     a. Main search  : (category:primary OR category:updates) "KEYWORD" after:DATE
+     b. Bounce search: (from:mailer-daemon OR from:postmaster) "KEYWORD" after:DATE
+2. Deduplicate by Gmail message ID.
+3. Skip emails you sent yourself.
+4. Auto-classify any email whose sender is mailer-daemon or postmaster
+   as "Bounce / Delivery Failure" — no API call needed for those.
+5. Send the remaining emails to the Claude API in batches for classification.
+6. Export a color-coded Excel report with a Summary sheet + Replies sheet.
+"""
+
+import os
+import re
+import sys
+import time
+import base64
+import html
+import datetime
+from email.utils import parseaddr
+
+# ─── CONFIG ──────────────────────────────────────────────────────────────────
+SEARCH_KEYWORD          = "Paid Teaching Fellowship Abroad for Recent STEM PhDs"
+SEARCH_AFTER_DATE       = "2025/07/01"           # Format: YYYY/MM/DD
+MY_EMAIL                = "pnayga@science-corps.org"
+
+OUTPUT_FOLDER           = "output"
+EXCEL_FILENAME          = "fellowship_replies.xlsx"
+
+# Claude API — set ANTHROPIC_API_KEY as an environment variable, or paste it here.
+ANTHROPIC_API_KEY       = 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
+CLAUDE_MODEL            = "claude-opus-4-6"
+CLASSIFICATION_BATCH_SIZE = 20   # emails per Claude API call (tune if you hit token limits)
+API_CALL_DELAY_SECONDS  = 1.0    # polite pause between batch calls
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Gmail OAuth2 — read-only is enough
+SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+
+# Gmail label → human name
+GMAIL_CATEGORY_LABELS = {
+    "CATEGORY_PERSONAL": "Primary",
+    "CATEGORY_UPDATES":  "Updates",
+}
+
+# Senders whose local-part indicates a bounce / NDR
+BOUNCE_SENDER_LOCALS = {"mailer-daemon", "postmaster"}
+
+# Classification categories → Excel row fill colour (openpyxl hex, no #)
+CATEGORY_COLORS = {
+    "Positive / Interested":     "C6EFCE",  # green
+    "Bounce / Delivery Failure": "FFC7CE",  # light red
+    "No Longer Works There":     "FFEB9C",  # orange-yellow
+    "Declined / Not Interested": "FF0000",  # dark red  (font goes white)
+    "Has a Question":            "FFFF99",  # yellow
+    "Application Submitted":     "BDD7EE",  # blue
+}
+DARK_RED_FONT_WHITE = {"Declined / Not Interested"}
+
+# ─── THIRD-PARTY IMPORTS ─────────────────────────────────────────────────────
+try:
+    from google.oauth2.credentials import Credentials
+    from google_auth_oauthlib.flow import InstalledAppFlow
+    from google.auth.transport.requests import Request as GoogleRequest
+    from googleapiclient.discovery import build
+    import openpyxl
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+except ImportError as e:
+    print(f"❌  Missing Google/Excel dependency: {e}")
+    print("    Run:  pip install -r requirements.txt")
+    sys.exit(1)
+
+try:
+    import anthropic
+except ImportError:
+    print("❌  Missing dependency: anthropic")
+    print("    Run:  pip install anthropic")
+    sys.exit(1)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# PART 1 — GMAIL AUTHENTICATION & EMAIL FETCHING
+# ════════════════════════════════════════════════════════════════════════════
+
+def authenticate_gmail():
+    """
+    OAuth2 login to Gmail.
+    First run: opens a browser; saves token.json for future runs.
+    Returns an authenticated Gmail API service object.
+    """
+    creds = None
+    token_path = "token.json"
+    creds_path = "credentials.json"
+
+    if not os.path.exists(creds_path):
+        print("❌  credentials.json not found.")
+        print("    Download it from Google Cloud Console → APIs & Services → Credentials.")
+        sys.exit(1)
+
+    if os.path.exists(token_path):
+        creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            print("🔄  Refreshing access token...")
+            creds.refresh(GoogleRequest())
+        else:
+            print("🌐  Opening browser for Gmail authorisation...")
+            flow = InstalledAppFlow.from_client_secrets_file(creds_path, SCOPES)
+            creds = flow.run_local_server(port=0)
+        with open(token_path, "w") as f:
+            f.write(creds.to_json())
+        print("✅  Token saved to token.json")
+
+    service = build("gmail", "v1", credentials=creds)
+    print("✅  Authenticated with Gmail.\n")
+    return service
+
+
+def _paginate_search(service, query):
+    """
+    Run a Gmail search and return ALL matching message stubs (id + threadId),
+    following nextPageToken pagination automatically.
+    """
+    ids = []
+    next_page = None
+    while True:
+        kwargs = {"userId": "me", "q": query, "maxResults": 500}
+        if next_page:
+            kwargs["pageToken"] = next_page
+        try:
+            resp = service.users().messages().list(**kwargs).execute()
+        except Exception as e:
+            print(f"   ⚠️  Gmail search error: {e}")
+            break
+        ids.extend(resp.get("messages", []))
+        next_page = resp.get("nextPageToken")
+        if not next_page:
+            break
+    return ids
+
+
+def get_gmail_category(label_ids):
+    """Map Gmail label IDs to 'Primary', 'Updates', or 'Other'."""
+    for label_id, name in GMAIL_CATEGORY_LABELS.items():
+        if label_id in label_ids:
+            return name
+    return "Other"
+
+
+def decode_body(part):
+    """Decode a base64url MIME body part to a UTF-8 string."""
+    data = part.get("body", {}).get("data", "")
+    if not data:
+        return ""
+    try:
+        return base64.urlsafe_b64decode(data + "==").decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
+def strip_html(raw_html):
+    """Remove HTML tags and unescape entities; collapse whitespace."""
+    clean = re.sub(r"<(style|script)[^>]*>.*?</(style|script)>", "",
+                   raw_html, flags=re.DOTALL | re.IGNORECASE)
+    clean = re.sub(r"<[^>]+>", " ", clean)
+    clean = re.sub(r"\s+", " ", clean).strip()
+    return html.unescape(clean)
+
+
+def extract_body(payload):
+    """
+    Walk the MIME tree to find the best plain-text body.
+    Falls back to HTML → stripped text if no text/plain part exists.
+    """
+    mime = payload.get("mimeType", "")
+    if mime == "text/plain":
+        return decode_body(payload)
+    if mime == "text/html":
+        return strip_html(decode_body(payload))
+    parts = payload.get("parts", [])
+    plain, html_text = "", ""
+    for part in parts:
+        result = extract_body(part)
+        if part.get("mimeType") == "text/plain" and result:
+            plain = result
+        elif part.get("mimeType") in ("text/html", "multipart/alternative") and result:
+            html_text = result
+        elif not plain and result:
+            plain = result
+    return plain or html_text
+
+
+def is_bounce_sender(sender_email):
+    """
+    Returns True if the email came from mailer-daemon or postmaster —
+    these are always NDR / bounce notifications.
+    """
+    local = sender_email.split("@")[0].lower().strip()
+    return local in BOUNCE_SENDER_LOCALS
+
+
+def fetch_emails(service):
+    """
+    Run the two search queries, deduplicate by message ID, fetch full
+    details for each unique message, and return a list of email dicts.
+
+    Query A (main):   (category:primary OR category:updates) "KEYWORD" after:DATE
+    Query B (bounces): (from:mailer-daemon OR from:postmaster) "KEYWORD" after:DATE
+    """
+    query_main   = (f'(category:primary OR category:updates) '
+                    f'"{SEARCH_KEYWORD}" after:{SEARCH_AFTER_DATE}')
+    query_bounce = (f'(from:mailer-daemon OR from:postmaster) '
+                    f'"{SEARCH_KEYWORD}" after:{SEARCH_AFTER_DATE}')
+
+    print(f"🔍  Main search query:\n    {query_main}")
+    main_ids   = _paginate_search(service, query_main)
+    print(f"    → {len(main_ids)} result(s)\n")
+
+    print(f"🔍  Bounce search query:\n    {query_bounce}")
+    bounce_ids = _paginate_search(service, query_bounce)
+    print(f"    → {len(bounce_ids)} result(s)\n")
+
+    # Deduplicate by message ID, preserving order (main first, then any new bounces)
+    seen = set()
+    combined = []
+    for ref in main_ids + bounce_ids:
+        if ref["id"] not in seen:
+            seen.add(ref["id"])
+            combined.append(ref)
+
+    total_unique = len(combined)
+    if total_unique == 0:
+        print("📭  No emails found. Check SEARCH_KEYWORD and SEARCH_AFTER_DATE.")
+        sys.exit(0)
+
+    print(f"📬  {total_unique} unique email(s) after deduplication. Fetching content...\n")
+
+    emails  = []
+    skipped = 0
+
+    for idx, msg_ref in enumerate(combined, start=1):
+        try:
+            msg = service.users().messages().get(
+                userId="me", id=msg_ref["id"], format="full"
+            ).execute()
+        except Exception as e:
+            print(f"   ⚠️  Skipping {msg_ref['id']}: {e}")
+            skipped += 1
+            continue
+
+        headers = {h["name"].lower(): h["value"]
+                   for h in msg.get("payload", {}).get("headers", [])}
+
+        from_raw = headers.get("from", "")
+        sender_name, sender_email = parseaddr(from_raw)
+        sender_email = sender_email.lower().strip()
+
+        # Skip emails I sent
+        if sender_email == MY_EMAIL.lower().strip():
+            skipped += 1
+            continue
+
+        date_raw       = headers.get("date", "")
+        subject        = headers.get("subject", "(no subject)")
+        label_ids      = msg.get("labelIds", [])
+        gmail_category = get_gmail_category(label_ids)
+        body           = extract_body(msg.get("payload", {})) or "(body unavailable)"
+
+        email_num = len(emails) + 1
+        emails.append({
+            "number":         email_num,
+            "sender_name":    sender_name or sender_email,
+            "sender_email":   sender_email,
+            "date":           date_raw,
+            "subject":        subject,
+            "body":           body,
+            "gmail_category": gmail_category,
+        })
+        print(f"   ✅  Email {email_num}/{total_unique - skipped} — {sender_email}")
+
+    if skipped:
+        print(f"\n   ℹ️  Skipped {skipped} email(s) (outgoing or fetch error).")
+
+    # Re-number sequentially after any skips
+    for i, e in enumerate(emails, start=1):
+        e["number"] = i
+
+    return emails
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# PART 2 — AUTOMATED CLASSIFICATION
+# ════════════════════════════════════════════════════════════════════════════
+
+# Canonical category names (used for normalising Claude's text output)
+CATEGORY_ALIASES = {
+    "positive":                       "Positive / Interested",
+    "positive / interested":          "Positive / Interested",
+    "interested":                     "Positive / Interested",
+    "bounce":                         "Bounce / Delivery Failure",
+    "bounce / delivery":              "Bounce / Delivery Failure",
+    "bounce / delivery failure":      "Bounce / Delivery Failure",
+    "delivery failure":               "Bounce / Delivery Failure",
+    "no longer works":                "No Longer Works There",
+    "no longer works there":          "No Longer Works There",
+    "no longer there":                "No Longer Works There",
+    "declined":                       "Declined / Not Interested",
+    "declined / not interested":      "Declined / Not Interested",
+    "not interested":                 "Declined / Not Interested",
+    "has a question":                 "Has a Question",
+    "question":                       "Has a Question",
+    "application submitted":          "Application Submitted",
+    "submitted":                      "Application Submitted",
+}
+
+RESULT_LINE_RE = re.compile(
+    r"Email\s+#?(\d+)\s*\|"
+    r"\s*Category:\s*([^|]+?)\s*\|"
+    r"\s*Summary:\s*([^|]+?)\s*\|"
+    r"\s*Action:\s*(.+)",
+    re.IGNORECASE,
+)
+
+
+def normalise_category(raw):
+    """Strip emojis / whitespace and map to a canonical category name."""
+    cleaned = re.sub(r"[✅📧🚪❌❓📋]", "", raw).strip().lower()
+    return CATEGORY_ALIASES.get(cleaned, raw.strip().title())
+
+
+def build_batch_prompt(emails_batch):
+    """
+    Build the classification prompt for a batch of emails.
+    Claude must return exactly one structured line per email.
+    """
+    lines = [
+        "Classify each email below into ONE of these categories:\n",
+        "  Positive / Interested",
+        "  Bounce / Delivery Failure",
+        "  No Longer Works There",
+        "  Declined / Not Interested",
+        "  Has a Question",
+        "  Application Submitted\n",
+        "Output ONE line per email in EXACTLY this format:",
+        "  Email #N | Category: <name> | Summary: <one sentence> | Action: <next step or None>\n",
+        "Example:",
+        "  Email #1 | Category: Positive / Interested | Summary: Admin will forward to students | Action: None\n",
+        "─" * 60,
+    ]
+    for e in emails_batch:
+        lines.append(f"\nEmail #{e['number']}")
+        lines.append(f"From:    {e['sender_name']} <{e['sender_email']}>")
+        lines.append(f"Date:    {e['date']}")
+        lines.append(f"Subject: {e['subject']}")
+        body_preview = e["body"][:1200]
+        if len(e["body"]) > 1200:
+            body_preview += "\n... [truncated]"
+        lines.append(f"\n{body_preview}")
+        lines.append("\n" + "─" * 60)
+    return "\n".join(lines)
+
+
+def classify_batch_with_claude(client, emails_batch):
+    """
+    Send one batch to Claude and return a dict: {email_number: parsed_result}.
+    Retries once on API error.
+    """
+    prompt = build_batch_prompt(emails_batch)
+    email_map = {e["number"]: e for e in emails_batch}
+
+    for attempt in range(2):
+        try:
+            message = client.messages.create(
+                model=CLAUDE_MODEL,
+                max_tokens=2048,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            response_text = message.content[0].text
+            break
+        except Exception as e:
+            if attempt == 0:
+                print(f"      ⚠️  API error ({e}), retrying in 5 s...")
+                time.sleep(5)
+            else:
+                print(f"      ❌  API call failed twice: {e}")
+                return {}
+
+    results = {}
+    for line in response_text.splitlines():
+        m = RESULT_LINE_RE.search(line.strip())
+        if not m:
+            continue
+        num      = int(m.group(1))
+        category = normalise_category(m.group(2))
+        summary  = m.group(3).strip()
+        action   = m.group(4).strip()
+        original = email_map.get(num, {})
+        results[num] = {
+            "number":         num,
+            "sender_name":    original.get("sender_name", ""),
+            "sender_email":   original.get("sender_email", ""),
+            "date":           original.get("date", ""),
+            "subject":        original.get("subject", ""),
+            "gmail_category": original.get("gmail_category", ""),
+            "category":       category,
+            "summary":        summary,
+            "action":         action,
+            "institution":    extract_institution(
+                                  original.get("sender_email", ""),
+                                  original.get("sender_name", ""),
+                                  original.get("body", "")),
+        }
+    return results
+
+
+def classify_emails(emails):
+    """
+    Master classification function:
+    1. Auto-tag mailer-daemon / postmaster emails as Bounce.
+    2. Send everything else to Claude API in batches.
+    3. Fill in 'Unclassified' for any email Claude missed.
+    Returns a list of result dicts sorted by email number.
+    """
+    if ANTHROPIC_API_KEY == "your-api-key-here":
+        print("❌  No Anthropic API key set.")
+        print("    Set the ANTHROPIC_API_KEY environment variable, or edit the CONFIG block.")
+        sys.exit(1)
+
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+    auto_results  = {}   # email_num → result (bounces, auto-tagged)
+    to_classify   = []   # emails that need Claude
+
+    # ── Step 1: Auto-tag bounces ──────────────────────────────────────────────
+    for e in emails:
+        if is_bounce_sender(e["sender_email"]):
+            auto_results[e["number"]] = {
+                "number":         e["number"],
+                "sender_name":    e["sender_name"],
+                "sender_email":   e["sender_email"],
+                "date":           e["date"],
+                "subject":        e["subject"],
+                "gmail_category": e["gmail_category"],
+                "category":       "Bounce / Delivery Failure",
+                "summary":        "Automated delivery failure / NDR from mail server.",
+                "action":         "Remove from list",
+                "institution":    extract_institution(e["sender_email"],
+                                                      e["sender_name"],
+                                                      e["body"]),
+            }
+        else:
+            to_classify.append(e)
+
+    bounce_count = len(auto_results)
+    print(f"\n   🤖  Auto-tagged {bounce_count} bounce(s).")
+    print(f"   🤖  Sending {len(to_classify)} email(s) to Claude for classification...\n")
+
+    # ── Step 2: Batch-classify with Claude ────────────────────────────────────
+    all_claude_results = {}
+    batches = [to_classify[i:i + CLASSIFICATION_BATCH_SIZE]
+               for i in range(0, len(to_classify), CLASSIFICATION_BATCH_SIZE)]
+
+    for batch_idx, batch in enumerate(batches, start=1):
+        nums = [e["number"] for e in batch]
+        print(f"   📡  Batch {batch_idx}/{len(batches)} "
+              f"(emails #{nums[0]}–#{nums[-1]})...")
+        batch_results = classify_batch_with_claude(client, batch)
+        all_claude_results.update(batch_results)
+        print(f"       ✅  Parsed {len(batch_results)}/{len(batch)} result(s).")
+        if batch_idx < len(batches):
+            time.sleep(API_CALL_DELAY_SECONDS)
+
+    # ── Step 3: Merge and fill gaps ───────────────────────────────────────────
+    email_map = {e["number"]: e for e in emails}
+    merged = {}
+    merged.update(auto_results)
+    merged.update(all_claude_results)
+
+    # Any email not yet classified (parse failure, etc.)
+    for num, e in email_map.items():
+        if num not in merged:
+            merged[num] = {
+                "number":         num,
+                "sender_name":    e["sender_name"],
+                "sender_email":   e["sender_email"],
+                "date":           e["date"],
+                "subject":        e["subject"],
+                "gmail_category": e["gmail_category"],
+                "category":       "Unclassified",
+                "summary":        "",
+                "action":         "",
+                "institution":    extract_institution(e["sender_email"],
+                                                      e["sender_name"],
+                                                      e["body"]),
+            }
+
+    return [merged[k] for k in sorted(merged)]
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# HELPER — INSTITUTION EXTRACTION
+# ════════════════════════════════════════════════════════════════════════════
+
+FREE_DOMAINS = {
+    "gmail.com", "yahoo.com", "hotmail.com", "outlook.com",
+    "aol.com", "icloud.com", "protonmail.com", "mail.com",
+}
+
+
+def extract_institution(sender_email, sender_name, body):
+    """
+    Best-effort institution extraction from email domain or body text.
+    Returns empty string if nothing useful is found.
+    """
+    domain = sender_email.split("@")[-1].lower() if "@" in sender_email else ""
+    if domain and domain not in FREE_DOMAINS:
+        return domain.replace(".edu", "").replace(".org", "").replace("-", " ").title()
+    snippet = body[:500]
+    for pat in [
+        r"(University of [A-Z][a-z]+(?: [A-Z][a-z]+)*)",
+        r"([A-Z][a-z]+(?: [A-Z][a-z]+)* University)",
+        r"([A-Z][a-z]+(?: [A-Z][a-z]+)* College)",
+        r"([A-Z][a-z]+(?: [A-Z][a-z]+)* Institute)",
+    ]:
+        m = re.search(pat, snippet)
+        if m:
+            return m.group(1)
+    return ""
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# PART 3 — EXPORT TO EXCEL
+# ════════════════════════════════════════════════════════════════════════════
+
+def load_existing_excel(path):
+    """
+    Load existing workbook and return (workbook, set_of_existing_keys).
+    existing_keys = set of (sender_email_lower, date_str) already in the file.
+    """
+    if not os.path.exists(path):
+        return None, set()
+    try:
+        wb = openpyxl.load_workbook(path)
+    except Exception as e:
+        print(f"   ⚠️  Could not open existing file ({e}). Starting fresh.")
+        return None, set()
+    existing = set()
+    if "Replies" in wb.sheetnames:
+        for row in wb["Replies"].iter_rows(min_row=2, values_only=True):
+            if row[2] and row[4]:
+                existing.add((str(row[2]).lower().strip(), str(row[4]).strip()))
+    return wb, existing
+
+
+def _thin_border():
+    thin = Side(style="thin", color="AAAAAA")
+    return Border(left=thin, right=thin, top=thin, bottom=thin)
+
+
+def export_to_excel(results, output_path):
+    """
+    Create or update the Excel workbook:
+      - Summary sheet  (inserted as first sheet): totals by category
+      - Replies sheet  : one colour-coded row per classified email
+    Skips rows already in the file (matched by sender email + date).
+    """
+    print(f"\n📊  Exporting to Excel...")
+
+    wb, existing = load_existing_excel(output_path)
+    if wb is None:
+        wb = openpyxl.Workbook()
+        if "Sheet" in wb.sheetnames:
+            del wb["Sheet"]
+
+    # ── Replies sheet ─────────────────────────────────────────────────────────
+    HEADERS = ["#", "Sender Name", "Email Address", "Institution",
+               "Date Received", "Gmail Category", "Category", "Summary", "Action Needed"]
+
+    if "Replies" not in wb.sheetnames:
+        ws = wb.create_sheet("Replies")
+    else:
+        ws = wb["Replies"]
+
+    # Write headers if the sheet is new/empty
+    if ws.max_row == 1 and not any(ws.iter_rows(min_row=1, max_row=1, values_only=True)):
+        ws.append(HEADERS)
+        hfill = PatternFill(fill_type="solid", fgColor="1F4E79")
+        hfont = Font(bold=True, color="FFFFFF", size=11)
+        for cell in ws[1]:
+            cell.fill      = hfill
+            cell.font      = hfont
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border    = _thin_border()
+        ws.row_dimensions[1].height = 20
+
+    added = 0
+    skipped_dupes = 0
+
+    for r in results:
+        key = (r["sender_email"].lower().strip(), r["date"].strip())
+        if key in existing:
+            skipped_dupes += 1
+            continue
+
+        ws.append([
+            r["number"], r["sender_name"], r["sender_email"], r["institution"],
+            r["date"], r["gmail_category"], r["category"], r["summary"], r["action"],
+        ])
+        added += 1
+        existing.add(key)
+
+        fill_hex = CATEGORY_COLORS.get(r["category"], "FFFFFF")
+        row_idx  = ws.max_row
+        for col in range(1, len(HEADERS) + 1):
+            cell            = ws.cell(row=row_idx, column=col)
+            cell.fill       = PatternFill(fill_type="solid", fgColor=fill_hex)
+            cell.border     = _thin_border()
+            cell.alignment  = Alignment(wrap_text=True, vertical="top")
+            if r["category"] in DARK_RED_FONT_WHITE:
+                cell.font   = Font(color="FFFFFF")
+
+    # Column widths
+    for i, w in enumerate([5, 25, 35, 25, 28, 14, 26, 55, 30], start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.freeze_panes = "A2"
+
+    # ── Summary sheet (rebuilt fresh each run) ────────────────────────────────
+    if "Summary" in wb.sheetnames:
+        del wb["Summary"]
+    ws_s = wb.create_sheet("Summary", 0)
+
+    cat_counts   = {}
+    gcat_counts  = {}
+    total_rows   = 0
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        if row[0] is None:
+            continue
+        total_rows += 1
+        cat_counts[str(row[6]  or "Unclassified")] = cat_counts.get(str(row[6]  or "Unclassified"), 0) + 1
+        gcat_counts[str(row[5] or "Other")]         = gcat_counts.get(str(row[5] or "Other"), 0) + 1
+
+    ws_s.column_dimensions["A"].width = 32
+    ws_s.column_dimensions["B"].width = 12
+
+    title_font   = Font(bold=True, size=14, color="1F4E79")
+    section_fill = PatternFill(fill_type="solid", fgColor="2E75B6")
+    section_font = Font(bold=True, size=11, color="FFFFFF")
+
+    ws_s["A1"] = "Science Corps Fellowship Scanner — Report"
+    ws_s["A1"].font = title_font
+    ws_s.merge_cells("A1:B1")
+    ws_s["A1"].alignment = Alignment(horizontal="center")
+    ws_s["A2"] = "Generated:"
+    ws_s["B2"] = datetime.date.today().strftime("%B %d, %Y")
+    ws_s["A3"] = "Total emails processed:"
+    ws_s["B3"] = total_rows
+    ws_s["A3"].font = Font(bold=True)
+    ws_s.append([])
+
+    ws_s.append(["Classification Breakdown", "Count"])
+    for cell in ws_s[ws_s.max_row]:
+        cell.fill = section_fill
+        cell.font = section_font
+        cell.alignment = Alignment(horizontal="center")
+        cell.border = _thin_border()
+    for cat, cnt in sorted(cat_counts.items()):
+        ws_s.append([cat, cnt])
+        fhex = CATEGORY_COLORS.get(cat, "FFFFFF")
+        for cell in ws_s[ws_s.max_row]:
+            cell.fill   = PatternFill(fill_type="solid", fgColor=fhex)
+            cell.border = _thin_border()
+            if cat in DARK_RED_FONT_WHITE:
+                cell.font = Font(color="FFFFFF")
+
+    ws_s.append([])
+    ws_s.append(["Gmail Category Breakdown", "Count"])
+    for cell in ws_s[ws_s.max_row]:
+        cell.fill = section_fill
+        cell.font = section_font
+        cell.alignment = Alignment(horizontal="center")
+        cell.border = _thin_border()
+    for gcat, cnt in sorted(gcat_counts.items()):
+        ws_s.append([gcat, cnt])
+        for cell in ws_s[ws_s.max_row]:
+            cell.border = _thin_border()
+
+    wb.save(output_path)
+    print(f"✅  Report saved → {output_path}")
+    if skipped_dupes:
+        print(f"   ℹ️  {skipped_dupes} duplicate(s) skipped.")
+    print(f"   ℹ️  {added} new row(s) added.")
+    return total_rows, cat_counts, gcat_counts
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# PART 4 — TERMINAL SUMMARY
+# ════════════════════════════════════════════════════════════════════════════
+
+def print_final_summary(emails, total_rows, cat_counts, gcat_counts, excel_path):
+    print("\n" + "═" * 62)
+    print("  🏁  FINAL SUMMARY")
+    print("═" * 62)
+    print(f"  Emails fetched this run  : {len(emails)}")
+
+    gcat_this = {}
+    for e in emails:
+        gcat_this[e["gmail_category"]] = gcat_this.get(e["gmail_category"], 0) + 1
+    print("\n  Gmail category (this run):")
+    for k, v in sorted(gcat_this.items()):
+        print(f"    {k:<20} {v}")
+
+    print("\n  Classification (full report):")
+    for k, v in sorted(cat_counts.items()):
+        print(f"    {k:<32} {v}")
+
+    print(f"\n  Total rows in Excel       : {total_rows}")
+    print(f"  Report                    : {excel_path}")
+    print("═" * 62 + "\n")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# MAIN
+# ════════════════════════════════════════════════════════════════════════════
+
+def main():
+    print("\n" + "═" * 62)
+    print("  Science Corps Fellowship Scanner")
+    print("═" * 62 + "\n")
+
+    os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+
+    service = authenticate_gmail()
+    emails  = fetch_emails(service)
+
+    print(f"\n🤖  Classifying {len(emails)} email(s) with Claude...\n")
+    results = classify_emails(emails)
+
+    excel_path = os.path.join(OUTPUT_FOLDER, EXCEL_FILENAME)
+    total_rows, cat_counts, gcat_counts = export_to_excel(results, excel_path)
+
+    print_final_summary(emails, total_rows, cat_counts, gcat_counts, excel_path)
+
+
+if __name__ == "__main__":
+    main()

@@ -2,6 +2,9 @@
 credentials.json
 token.json
 
+# Listserv CSV files contain contact emails — keep off public repos
+*.csv
+
 # Python virtual environment
 venv/
 

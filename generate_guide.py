@@ -1,8 +1,7 @@
 """
 generate_guide.py
 -----------------
-Generates a printable HTML guide (output/implementation_guide.html)
-covering setup, the full per-cycle workflow, and what to do with each output.
+Generates a printable HTML guide (output/implementation_guide.html).
 Open in Chrome/Edge and press Ctrl+P -> Save as PDF.
 """
 
@@ -207,6 +206,7 @@ HTML = f"""<!DOCTYPE html>
     <li>One-Time Setup (do this once per machine)</li>
     <li>Before Every Blast — Prepare Your Listserv</li>
     <li>Running the Scanner After a Blast</li>
+    <li>Classifying Pending Emails via Claude.ai</li>
     <li>Reading the Excel Report</li>
     <li>The Action Plan — What to Do Next</li>
     <li>Generating the Positive Replies Outreach PDF</li>
@@ -223,8 +223,9 @@ HTML = f"""<!DOCTYPE html>
 <p>After you send a fellowship blast email to your academic listserv, this system automatically:</p>
 <ul style="padding-left:22px;margin:10px 0;">
   <li>Connects to your Gmail and finds every reply (inbox, updates, spam, and bounce folders)</li>
-  <li>Uses the Claude AI to classify each reply into a category (Positive, Bounce, Declined, etc.)</li>
-  <li>Tracks which listserv addresses never replied at all</li>
+  <li>Auto-tags hard bounces (mailer-daemon, postmaster) without any manual step</li>
+  <li>Tracks which listserv addresses never replied at all (No Reply rows)</li>
+  <li>Exports unclassified emails to <code>output/pending_for_claude.xlsx</code> for upload to Claude.ai</li>
   <li>Produces a colour-coded Excel report with an Action Plan tab telling you exactly what to do</li>
   <li>Generates a draft outreach email for every positive reply</li>
   <li>Outputs a cleaned listserv (dead bounces removed) ready for the next blast</li>
@@ -261,7 +262,7 @@ venv\\Scripts\\activate</div>
 <div class="step">
   <div class="step-title"><span class="step-num">3</span> Install dependencies</div>
   <div class="cmd-block">pip install -r requirements.txt</div>
-  <p>This installs the Google API client, Anthropic Claude client, and openpyxl (Excel). Do this once; no need to repeat unless you reset the venv.</p>
+  <p>This installs the Google API client and openpyxl (Excel). Do this once; no need to repeat unless you reset the venv.</p>
 </div>
 
 <div class="step">
@@ -281,14 +282,7 @@ venv\\Scripts\\activate</div>
 </div>
 
 <div class="step">
-  <div class="step-title"><span class="step-num">5</span> Set your Anthropic API key</div>
-  <p>In the terminal (with venv active), run:</p>
-  <div class="cmd-block">export ANTHROPIC_API_KEY="sk-ant-your-key-here"</div>
-  <p>Get your key from <strong>console.anthropic.com → API Keys</strong>. The key is only needed while the terminal session is open; you will need to re-export it each time you open a new terminal.</p>
-</div>
-
-<div class="step">
-  <div class="step-title"><span class="step-num">6</span> First run — browser login</div>
+  <div class="step-title"><span class="step-num">5</span> First run — browser login</div>
   <p>The first time you run the scanner, a browser window will open asking you to sign in to Gmail. After you approve, a <code>token.json</code> file is saved. Future runs skip the browser login automatically.</p>
   <div class="callout callout-warn" style="margin-top:8px;">
     <strong>token.json is private — do not share or commit it.</strong>
@@ -301,10 +295,10 @@ venv\\Scripts\\activate</div>
 <div class="part">3 &nbsp;—&nbsp; Before Every Blast — Prepare Your Listserv</div>
 
 <div class="step">
-  <div class="step-title"><span class="step-num">1</span> Export your mailing list as a CSV</div>
-  <p>Create or update a CSV file with one email address per line. Save it in the project folder.</p>
-  <p>The current file is: <code>Filtered Listserv for Feb 2026 Applications - Sheet1.csv</code></p>
-  <p>For a new cycle, either update this file or change the <code>LISTSERV_CSV</code> setting at the top of <code>fellowship_scanner.py</code>.</p>
+  <div class="step-title"><span class="step-num">1</span> Place your listserv file in the project folder</div>
+  <p>Your listserv should be an Excel file (<code>.xlsx</code>) with one email address per row (no header needed). Place it in the project folder.</p>
+  <p>The current file is: <code>Filtered Listserv for Feb 2026 Applications.xlsx</code></p>
+  <p>For a new cycle, either update this file or change <code>LISTSERV_CSV</code> in the CONFIG block of <code>fellowship_scanner.py</code> to point to the new filename.</p>
 </div>
 
 <div class="step">
@@ -313,7 +307,7 @@ venv\\Scripts\\activate</div>
   <table>
     <tr><th>Setting</th><th>What to change</th></tr>
     <tr><td>SEARCH_AFTER_DATE</td><td>Set to the date you sent the blast (YYYY/MM/DD). Emails before this date are ignored.</td></tr>
-    <tr><td>LISTSERV_CSV</td><td>Filename of your current listserv CSV.</td></tr>
+    <tr><td>LISTSERV_CSV</td><td>Filename of your current listserv Excel file.</td></tr>
     <tr><td>CC_EMAILS</td><td>Add any addresses you CC'd on the blast — prevents them from appearing as false positives.</td></tr>
   </table>
 </div>
@@ -321,9 +315,6 @@ venv\\Scripts\\activate</div>
 <div class="step">
   <div class="step-title"><span class="step-num">3</span> Send the blast (BCC all listserv addresses)</div>
   <p>Send your fellowship email using BCC for all listserv addresses. Wait at least 24–48 hours before running the scanner so bounces and auto-replies have time to arrive.</p>
-  <div class="callout callout-tip" style="margin-top:8px;">
-    <strong>Tip:</strong> If any recipient replies asking you to contact them directly (not via BCC), note their address — you will handle it in Step 6 of the Action Plan.
-  </div>
 </div>
 
 
@@ -331,42 +322,71 @@ venv\\Scripts\\activate</div>
 <div class="part">4 &nbsp;—&nbsp; Running the Scanner After a Blast</div>
 
 <div class="step">
-  <div class="step-title"><span class="step-num">1</span> Open a terminal in the project folder</div>
-  <p>Activate the virtual environment:</p>
+  <div class="step-title"><span class="step-num">1</span> Open a terminal in the project folder and activate the venv</div>
   <div class="cmd-block">venv\\Scripts\\activate</div>
 </div>
 
 <div class="step">
-  <div class="step-title"><span class="step-num">2</span> Set your API key (if not already set)</div>
-  <div class="cmd-block">export ANTHROPIC_API_KEY="sk-ant-your-key-here"</div>
-</div>
-
-<div class="step">
-  <div class="step-title"><span class="step-num">3</span> Run the scanner</div>
+  <div class="step-title"><span class="step-num">2</span> Run the scanner</div>
   <div class="cmd-block">python fellowship_scanner.py</div>
   <p>The script will:</p>
   <ul>
     <li>Search Gmail across all folders (inbox, updates, spam, bounces)</li>
-    <li>Run a batch search for any reply from your 800+ listserv addresses</li>
-    <li>Send unclassified emails to Claude AI in batches of 20</li>
-    <li>Build the Excel report and Action Plan tab</li>
+    <li>Run a batch search for any reply from your listserv addresses</li>
+    <li>Auto-tag hard bounces (mailer-daemon / postmaster) immediately</li>
+    <li>Add No Reply rows for every listserv address that didn't respond</li>
+    <li>Save <code>output/fellowship_replies.xlsx</code> with bounces and No Reply rows filled in</li>
+    <li>Save <code>output/pending_for_claude.xlsx</code> with the remaining unclassified emails</li>
   </ul>
-  <p>Runtime is typically <strong>5–15 minutes</strong> depending on the number of replies.</p>
+  <p>Runtime is typically <strong>10–20 minutes</strong> for 800+ listserv addresses (Gmail batch queries take time).</p>
 </div>
 
 <div class="step">
-  <div class="step-title"><span class="step-num">4</span> Re-running is safe</div>
+  <div class="step-title"><span class="step-num">3</span> Re-running is safe</div>
   <p>You can run the scanner multiple times. It skips rows already in the Excel file (matched by email address + date) and only adds new entries. The Action Plan and Summary tabs are always rebuilt fresh.</p>
+  <div class="callout callout-tip" style="margin-top:8px;">
+    <strong>Tip:</strong> If you delete <code>output/fellowship_replies.xlsx</code> before re-running, everything is rebuilt from scratch — useful if the file gets corrupted or you want a clean slate.
+  </div>
 </div>
 
 
 <!-- ══════════════════════════════════════════════════════ PART 4 -->
-<div class="part">5 &nbsp;—&nbsp; Reading the Excel Report</div>
+<div class="part">5 &nbsp;—&nbsp; Classifying Pending Emails via Claude.ai</div>
+
+<p>After the scanner runs, some emails cannot be auto-tagged and are saved to <code>output/pending_for_claude.xlsx</code>. These need to be classified using the Science Corps Classification project in Claude.ai.</p>
+
+<div class="step">
+  <div class="step-title"><span class="step-num">1</span> Open the Science Corps Classification project in Claude.ai</div>
+  <p>Go to <strong>claude.ai</strong> and open the <strong>Science Corps Classification</strong> project. Start a new conversation.</p>
+</div>
+
+<div class="step">
+  <div class="step-title"><span class="step-num">2</span> Upload pending_for_claude.xlsx</div>
+  <p>Click the attachment / upload icon in the Claude.ai chat and upload:</p>
+  <p><code>output/pending_for_claude.xlsx</code></p>
+  <p>Claude will read each email row, classify it into a category, and generate a completed <code>fellowship_replies.xlsx</code> with all rows colour-coded and the Action Plan filled in.</p>
+</div>
+
+<div class="step">
+  <div class="step-title"><span class="step-num">3</span> Download and save the completed report</div>
+  <p>When Claude finishes, download the file it provides and save it to:</p>
+  <p><code>output/fellowship_replies.xlsx</code></p>
+  <p>(Replace the existing file.)</p>
+</div>
+
+<div class="callout callout-info" style="margin-top:4px;">
+  <strong>What if there are no pending emails?</strong>
+  If all emails were auto-tagged as bounces and the rest are No Reply, the script will print "No pending emails" and skip generating the pending file. In that case, your <code>fellowship_replies.xlsx</code> is already complete.
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════ PART 5 -->
+<div class="part">6 &nbsp;—&nbsp; Reading the Excel Report</div>
 
 <p>The report is saved at <code>output/fellowship_replies.xlsx</code> and has three sheets:</p>
 
 <h3>Sheet 1 — Action Plan (open this first)</h3>
-<p>A prioritised to-do list rebuilt every run. See Part 6 for details.</p>
+<p>A prioritised to-do list rebuilt every run. See Part 7 for details.</p>
 
 <h3>Sheet 2 — Summary</h3>
 <p>Total counts by classification category and Gmail category. Use this for a quick overview.</p>
@@ -383,26 +403,27 @@ venv\\Scripts\\activate</div>
   <span class="chip" style="background:#FF0000;color:#fff;">Declined / Not Interested</span>
   <span class="chip" style="background:#E2CFFF;">Auto-Reply (OOO)</span>
   <span class="chip" style="background:#D9D9D9;">No Reply</span>
+  <span class="chip" style="background:#FFFFE0;">Pending (unclassified)</span>
 </div>
 
 <div class="callout callout-info" style="margin-top:12px;">
   <strong>Important — No Reply count</strong>
-  ~700 No Reply rows is normal and expected. The listserv has 815 addresses;
+  ~700 No Reply rows is normal and expected. The listserv has 800+ addresses;
   a 10–15% response rate (including bounces and auto-replies) is typical for a cold academic blast.
   The No Reply rows are not a data error.
 </div>
 
 
-<!-- ══════════════════════════════════════════════════════ PART 5 -->
-<div class="part">6 &nbsp;—&nbsp; The Action Plan — What to Do Next</div>
+<!-- ══════════════════════════════════════════════════════ PART 6 -->
+<div class="part">7 &nbsp;—&nbsp; The Action Plan — What to Do Next</div>
 
 <p>Open the <strong>Action Plan</strong> tab in the Excel report and work through each step in order.</p>
 
 <div class="step">
   <div class="step-title"><span class="step-num" style="background:#1A7A3C;">1</span> STEP 1 — FOLLOW UP NOW &nbsp;<em>(Positive, Has a Question, Application Submitted)</em></div>
   <ul>
-    <li><strong>Positive / Interested:</strong> Reply with the application link, deadlines, and next steps. Then run <code>positive_replies_report.py</code> (see Part 7) to get a personalised outreach email asking them to refer colleagues.</li>
-    <li><strong>Has a Question:</strong> Read the Claude summary and reply directly to their question.</li>
+    <li><strong>Positive / Interested:</strong> Reply with the application link, deadlines, and next steps. Then run <code>positive_replies_report.py</code> (see Part 8) to get a personalised outreach email asking them to refer colleagues.</li>
+    <li><strong>Has a Question:</strong> Read the summary and reply directly to their question.</li>
     <li><strong>Application Submitted:</strong> Acknowledge receipt and add them to your applicant tracker.</li>
   </ul>
 </div>
@@ -410,12 +431,12 @@ venv\\Scripts\\activate</div>
 <div class="step">
   <div class="step-title"><span class="step-num" style="background:#BF6A00;">2</span> STEP 2 — SPECIAL ACTION NEEDED &nbsp;<em>(No Longer Works There, Declined)</em></div>
   <ul>
-    <li><strong>No Longer Works There:</strong> Read the Claude summary — they may have provided a forwarding contact or new colleague's email. If so, add that new address to your listserv for next cycle and remove the old one.</li>
+    <li><strong>No Longer Works There:</strong> Read the summary — they may have provided a forwarding contact or new colleague's email. If so, add that new address to your listserv for next cycle and remove the old one.</li>
     <li><strong>Declined / Not Interested:</strong> Read the summary carefully.
       <ul>
-        <li>If they said <em>"post to our board / listserv"</em> → post the opportunity there as instructed, do not re-blast.</li>
-        <li>If they said <em>"don't use BCC, send directly"</em> → resend a direct, individual email to that address.</li>
-        <li>If they gave a plain no → acknowledge and move on, remove from future blasts.</li>
+        <li>If they said <em>"post to our board / listserv"</em> → post the opportunity there as instructed.</li>
+        <li>If they said <em>"don't use BCC, send directly"</em> → resend a direct individual email.</li>
+        <li>If they gave a plain no → acknowledge and remove from future blasts.</li>
       </ul>
     </li>
   </ul>
@@ -428,12 +449,12 @@ venv\\Scripts\\activate</div>
 
 <div class="step">
   <div class="step-title"><span class="step-num" style="background:#9C0006;">4</span> STEP 4 — DEAD ADDRESSES — REMOVE FROM LIST &nbsp;<em>(Bounce)</em></div>
-  <p>These email addresses failed to deliver. Run <code>clean_listserv.py</code> (Part 8) to strip them from your list. No other action needed.</p>
+  <p>These email addresses failed to deliver. Run <code>clean_listserv.py</code> (Part 9) to strip them from your list. No other action needed.</p>
 </div>
 
 
-<!-- ══════════════════════════════════════════════════════ PART 6 -->
-<div class="part">7 &nbsp;—&nbsp; Generating the Positive Replies Outreach</div>
+<!-- ══════════════════════════════════════════════════════ PART 7 -->
+<div class="part">8 &nbsp;—&nbsp; Generating the Positive Replies Outreach</div>
 
 <div class="step">
   <div class="step-title"><span class="step-num">1</span> Run the script</div>
@@ -456,17 +477,17 @@ venv\\Scripts\\activate</div>
   <p>Each card in the report shows:</p>
   <ul>
     <li>The sender's name, email, institution, and date</li>
-    <li>Claude's summary of what they actually said in their reply</li>
+    <li>A summary of what they said in their reply</li>
     <li>A ready-to-send draft email — personalised by first name — thanking them and asking if they know any STEM PhD graduates who might be interested</li>
   </ul>
   <div class="callout callout-tip" style="margin-top:8px;">
-    <strong>Tip:</strong> The draft is a starting point. Adjust the tone for each person if you have extra context from their reply (e.g., if they mentioned a specific colleague by name, reference that).
+    <strong>Tip:</strong> The draft is a starting point. Adjust the tone for each person if you have extra context from their reply.
   </div>
 </div>
 
 
-<!-- ══════════════════════════════════════════════════════ PART 7 -->
-<div class="part">8 &nbsp;—&nbsp; Cleaning the Listserv for the Next Cycle</div>
+<!-- ══════════════════════════════════════════════════════ PART 8 -->
+<div class="part">9 &nbsp;—&nbsp; Cleaning the Listserv for the Next Cycle</div>
 
 <div class="step">
   <div class="step-title"><span class="step-num">1</span> Run the cleaner</div>
@@ -483,48 +504,39 @@ venv\\Scripts\\activate</div>
 <div class="step">
   <div class="step-title"><span class="step-num">2</span> Manually process the Needs Review sheet</div>
   <ul>
-    <li>For <strong>No Longer Works There</strong> — check if they gave a new contact in their reply. If yes, add the new address to the Cleaned Listserv sheet.</li>
-    <li>For <strong>Declined</strong> — if they said "don't BCC us", add a note and remove them. If they said "post to our board", that is a one-time action (already done in Step 6).</li>
+    <li>For <strong>No Longer Works There</strong> — check if they gave a new contact. If yes, add the new address to the Cleaned Listserv sheet.</li>
+    <li>For <strong>Declined</strong> — if they said "don't BCC us", remove them. If they said "post to our board", that is a one-time action already done.</li>
   </ul>
 </div>
 
 <div class="step">
-  <div class="step-title"><span class="step-num">3</span> Export the Cleaned Listserv for blasting</div>
-  <p>When the Cleaned Listserv sheet is final:</p>
-  <ol>
-    <li>Open <code>output/cleaned_listserv.xlsx</code></li>
-    <li>Go to the <strong>Cleaned Listserv</strong> sheet</li>
-    <li>Copy the <strong>Email Address</strong> column (column B)</li>
-    <li>Paste into your email client's BCC field or your mail merge tool</li>
-  </ol>
+  <div class="step-title"><span class="step-num">3</span> Save the cleaned list for the next cycle</div>
+  <p>Save <code>output/cleaned_listserv.xlsx</code> in the project folder under a new name (e.g. <code>Listserv July 2026.xlsx</code>) and update <code>LISTSERV_CSV</code> in the CONFIG block of <code>fellowship_scanner.py</code> before the next blast.</p>
 </div>
-
-<div class="step">
-  <div class="step-title"><span class="step-num">4</span> Update LISTSERV_CSV for the next cycle</div>
-  <p>Before the next blast, save the final cleaned email list as a new CSV file (one address per line) and update <code>LISTSERV_CSV</code> in the CONFIG block of <code>fellowship_scanner.py</code>.</p>
-</div>
-
-
-<!-- ══════════════════════════════════════════════════════ PART 8 -->
-<div class="part">9 &nbsp;—&nbsp; Full File Reference</div>
-
-<table>
-  <tr><th>File</th><th>Purpose</th><th>Edit / commit?</th></tr>
-  <tr><td>fellowship_scanner.py</td><td>Main scanner — all Gmail + Claude + Excel logic</td><td>Edit CONFIG block only; commit freely</td></tr>
-  <tr><td>clean_listserv.py</td><td>Generates cleaned listserv Excel from the report</td><td>No edits needed; commit freely</td></tr>
-  <tr><td>positive_replies_report.py</td><td>Generates outreach HTML for positive replies</td><td>Edit TEMPLATE if you want a different email draft; commit freely</td></tr>
-  <tr><td>requirements.txt</td><td>Python package list</td><td>No edits needed; commit freely</td></tr>
-  <tr><td>credentials.json</td><td>Google OAuth2 key</td><td><strong>NEVER commit.</strong> Keep locally only.</td></tr>
-  <tr><td>token.json</td><td>Saved Gmail session</td><td><strong>NEVER commit.</strong> Delete to force re-login.</td></tr>
-  <tr><td>Filtered Listserv *.csv</td><td>Your current mailing list (one email per line)</td><td>Update each cycle; keep out of public repos.</td></tr>
-  <tr><td>output/fellowship_replies.xlsx</td><td>Main colour-coded report (Summary, Action Plan, Replies sheets)</td><td>Auto-generated; do not manually edit.</td></tr>
-  <tr><td>output/cleaned_listserv.xlsx</td><td>Filtered listserv for next blast</td><td>Auto-generated; manually adjust Needs Review sheet.</td></tr>
-  <tr><td>output/positive_replies_outreach.html</td><td>Outreach draft for positive replies</td><td>Auto-generated; print to PDF in Chrome.</td></tr>
-</table>
 
 
 <!-- ══════════════════════════════════════════════════════ PART 9 -->
-<div class="part">10 &nbsp;—&nbsp; Quick-Reference Checklist</div>
+<div class="part">10 &nbsp;—&nbsp; Full File Reference</div>
+
+<table>
+  <tr><th>File</th><th>Purpose</th><th>Edit / commit?</th></tr>
+  <tr><td>fellowship_scanner.py</td><td>Main scanner — Gmail fetch, auto-tag, Excel export, pending file</td><td>Edit CONFIG block only; commit freely</td></tr>
+  <tr><td>clean_listserv.py</td><td>Generates cleaned listserv Excel from the report</td><td>No edits needed; commit freely</td></tr>
+  <tr><td>positive_replies_report.py</td><td>Generates outreach HTML for positive replies</td><td>No edits needed; commit freely</td></tr>
+  <tr><td>generate_guide.py</td><td>Generates this implementation guide HTML</td><td>No edits needed; commit freely</td></tr>
+  <tr><td>requirements.txt</td><td>Python package list</td><td>No edits needed; commit freely</td></tr>
+  <tr><td>credentials.json</td><td>Google OAuth2 key</td><td><strong>NEVER commit.</strong> Keep locally only.</td></tr>
+  <tr><td>token.json</td><td>Saved Gmail session</td><td><strong>NEVER commit.</strong> Delete to force re-login.</td></tr>
+  <tr><td>Listserv *.xlsx</td><td>Your current mailing list (one email per row)</td><td>Update each cycle; keep out of public repos.</td></tr>
+  <tr><td>output/fellowship_replies.xlsx</td><td>Main colour-coded report (Action Plan, Summary, Replies)</td><td>Auto-generated; do not manually edit.</td></tr>
+  <tr><td>output/pending_for_claude.xlsx</td><td>Unclassified emails — upload to Claude.ai for classification</td><td>Auto-generated; upload to Claude.ai then discard.</td></tr>
+  <tr><td>output/cleaned_listserv.xlsx</td><td>Filtered listserv for next blast</td><td>Auto-generated; manually adjust Needs Review sheet.</td></tr>
+  <tr><td>output/positive_replies_outreach.html</td><td>Outreach drafts for positive replies</td><td>Auto-generated; print to PDF in Chrome.</td></tr>
+</table>
+
+
+<!-- ══════════════════════════════════════════════════════ PART 10 -->
+<div class="part">11 &nbsp;—&nbsp; Quick-Reference Checklist</div>
 
 <p>Print this page and check off each item every cycle.</p>
 
@@ -537,8 +549,8 @@ venv\\Scripts\\activate</div>
 
 <h3>Before every blast</h3>
 <ul style="padding-left:22px;line-height:2;">
-  <li>&#9744; Update <code>SEARCH_AFTER_DATE</code> in fellowship_scanner.py to today's date</li>
-  <li>&#9744; Update <code>LISTSERV_CSV</code> to point to the current cleaned listserv file</li>
+  <li>&#9744; Update <code>SEARCH_AFTER_DATE</code> in fellowship_scanner.py to the blast send date</li>
+  <li>&#9744; Update <code>LISTSERV_CSV</code> to point to the current listserv Excel file</li>
   <li>&#9744; Confirm <code>CC_EMAILS</code> includes anyone you will CC (not BCC)</li>
   <li>&#9744; Send blast via BCC</li>
   <li>&#9744; Wait 24–48 hours for replies and bounces to arrive</li>
@@ -546,13 +558,15 @@ venv\\Scripts\\activate</div>
 
 <h3>After every blast (run in this order)</h3>
 <ul style="padding-left:22px;line-height:2;">
-  <li>&#9744; <code>python fellowship_scanner.py</code> — generates Excel report</li>
-  <li>&#9744; Open Action Plan tab — work through Step 1 (follow ups) and Step 2 (special cases)</li>
+  <li>&#9744; <code>python fellowship_scanner.py</code> — fetches replies, auto-tags bounces, adds No Reply rows, saves Excel + pending file</li>
+  <li>&#9744; Upload <code>output/pending_for_claude.xlsx</code> to the Science Corps Classification project in Claude.ai</li>
+  <li>&#9744; Download completed <code>fellowship_replies.xlsx</code> from Claude.ai → save to <code>output/</code></li>
+  <li>&#9744; Open <strong>Action Plan</strong> tab — work through Step 1 (follow ups) and Step 2 (special cases)</li>
   <li>&#9744; <code>python positive_replies_report.py</code> — generate outreach HTML, print to PDF</li>
   <li>&#9744; Send personalised thank-you + referral request to each positive reply</li>
   <li>&#9744; <code>python clean_listserv.py</code> — generate cleaned listserv</li>
   <li>&#9744; Review Needs Review sheet, adjust cleaned list manually if needed</li>
-  <li>&#9744; Save final cleaned email list as new CSV for next cycle</li>
+  <li>&#9744; Save final cleaned list as new Excel file for next cycle</li>
 </ul>
 
 <div class="callout callout-tip" style="margin-top:20px;">
@@ -578,3 +592,4 @@ print()
 print("Next steps:")
 print("  1. Open the file in Chrome or Edge")
 print("  2. Press Ctrl+P -> Save as PDF")
+print("  3. Save as output/implementation_guide.pdf")

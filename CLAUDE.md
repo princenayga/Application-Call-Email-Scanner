@@ -2,16 +2,15 @@
 
 ## What this project is
 
-A fully-automated Python CLI tool that:
+A Python CLI tool that:
 1. Fetches replies to a Science Corps fellowship email blast from Gmail (via OAuth2)
 2. Cross-references replies against a listserv CSV to track non-replies
 3. Auto-classifies obvious bounces (mailer-daemon / postmaster / -owner senders)
-4. Sends all other emails to the Claude API (claude-opus-4-6) in batches for classification
-5. Extracts failed recipient addresses from NDR bodies to reclassify No Reply → Bounce
-6. Exports a colour-coded Excel report with Action Plan, Summary, and Replies sheets
-7. Generates a cleaned listserv (dead bounces removed) and a positive-reply outreach report
-
-There is no manual copy-paste step — the pipeline runs end-to-end with a single command.
+4. Exports a colour-coded Excel report — bounces and No Reply rows filled automatically
+5. Writes unclassified emails to `output/pending_for_claude.txt` — ready to paste into Claude.ai
+6. `fill_classifications.py` accepts Claude.ai output and fills the remaining rows in Excel
+7. Extracts failed recipient addresses from NDR bodies to reclassify No Reply → Bounce
+8. Generates a cleaned listserv (dead bounces removed) and a positive-reply outreach report
 
 ## Project owner
 
@@ -21,7 +20,7 @@ Prince Nayga — Philippine Manager, Science Corps (`pnayga@science-corps.org`)
 
 | File | Purpose |
 |---|---|
-| `fellowship_scanner.py` | Main script — all logic lives here |
+| `fellowship_scanner.py` | Main script — Gmail fetch, auto-tag, No Reply, Excel export, pending file |
 | `clean_listserv.py` | Generates cleaned listserv Excel (bounces stripped, review flagged) |
 | `positive_replies_report.py` | Generates HTML outreach report with draft emails for positive replies |
 | `generate_guide.py` | Generates printable HTML implementation guide |
@@ -30,6 +29,7 @@ Prince Nayga — Philippine Manager, Science Corps (`pnayga@science-corps.org`)
 | `token.json` | Saved Gmail session token — **never commit this** |
 | `*.csv` | Listserv CSV files — gitignored (contain contact emails) |
 | `output/fellowship_replies.xlsx` | Main colour-coded Excel report (Action Plan + Summary + Replies) |
+| `output/pending_for_claude.xlsx` | Simple Excel of unclassified emails — upload this to the Claude.ai classification project for processing |
 | `output/cleaned_listserv.xlsx` | Filtered listserv for the next blast cycle |
 | `output/positive_replies_outreach.html` | Outreach drafts for positive replies — open in Chrome, print to PDF |
 | `output/implementation_guide.html` | Step-by-step workflow guide — open in Chrome, print to PDF |
@@ -49,7 +49,7 @@ venv/
 __pycache__/
 ```
 
-The `ANTHROPIC_API_KEY` must be supplied as an environment variable — never hardcoded in `fellowship_scanner.py`.
+No API keys live in this codebase — classification is done via the Claude.ai web interface.
 
 ## How to run (on any machine)
 
@@ -65,12 +65,10 @@ pip install -r requirements.txt
 
 # 4. Place credentials.json (Google OAuth2 Desktop App) in the project root
 
-# 5. Set your Anthropic API key
-export ANTHROPIC_API_KEY="sk-ant-..."   # Mac / Linux / Git Bash
-# $env:ANTHROPIC_API_KEY="sk-ant-..."  # Windows PowerShell
-
-# 6. Run the main scanner
+# 5. Run the main scanner
 python fellowship_scanner.py
+
+# 6. Classify pending emails via Claude.ai (see Manual Classification Workflow below)
 
 # 7. (Optional) Generate the positive replies outreach report
 python positive_replies_report.py
@@ -84,6 +82,16 @@ python generate_guide.py
 
 On first run a browser window opens for Gmail login. The session is saved to `token.json`; subsequent runs skip the browser.
 
+## Manual classification workflow
+
+After `fellowship_scanner.py` finishes, bounces and No Reply rows are auto-tagged and `output/pending_for_claude.xlsx` is generated for the remaining emails. To complete classification:
+
+1. Run `fellowship_scanner.py` — bounces and No Reply rows are auto-tagged; `pending_for_claude.xlsx` is generated
+2. Open the **Science Corps Classification** project in Claude.ai
+3. Upload `output/pending_for_claude.xlsx` to a new conversation
+4. Claude classifies each email and returns a completed `fellowship_replies.xlsx` as a download
+5. Download and save the file to the `output/` folder
+
 ## CONFIG block (top of fellowship_scanner.py)
 
 All user-tunable settings are in the `# ─── CONFIG ───` block at the top of the script. Key variables:
@@ -91,13 +99,10 @@ All user-tunable settings are in the `# ─── CONFIG ───` block at the
 | Variable | Default | Meaning |
 |---|---|---|
 | `SEARCH_KEYWORD` | `"Paid Teaching Fellowship Abroad for Recent STEM PhDs"` | Keyword used in Gmail queries |
-| `SEARCH_AFTER_DATE` | `"2025/12/13"` | Ignore emails older than this (YYYY/MM/DD) — update each cycle |
+| `SEARCH_AFTER_DATE` | `"2026/06/02"` | Ignore emails older than this (YYYY/MM/DD) — update each cycle |
 | `MY_EMAIL` | `pnayga@science-corps.org` | Outgoing emails from this address are skipped |
 | `CC_EMAILS` | `{ccorry@..., cjellareroma@...}` | Addresses CC'd on the blast — excluded from NDR extraction |
 | `LISTSERV_CSV` | `Filtered Listserv for Feb 2026 Applications - Sheet1.csv` | Listserv file to cross-reference — update each cycle |
-| `CLAUDE_MODEL` | `claude-opus-4-6` | Anthropic model used for classification |
-| `CLASSIFICATION_BATCH_SIZE` | `20` | Emails per Claude API call; lower if you hit token limits |
-| `API_CALL_DELAY_SECONDS` | `1.0` | Pause between batches (rate-limit courtesy) |
 | `FROM_SEARCH_BATCH_SIZE` | `20` | Listserv addresses per from: query batch |
 
 ## Gmail search queries
@@ -107,16 +112,16 @@ The script runs **four** searches and deduplicates by message ID:
 1. **Main** (inbox + spam): `"KEYWORD" after:DATE -from:MY_EMAIL`
 2. **Bounce sender** (inbox + spam): `(from:mailer-daemon OR from:postmaster) after:DATE`
 3. **Bounce subject** (inbox + spam): subject-line NDR patterns after:DATE
-4. **Listserv from-search** (inbox + spam): batched `(from:addr1 OR from:addr2...) after:DATE` — 41 batches of 20
+4. **Listserv from-search** (inbox + spam): batched `(from:addr1 OR from:addr2...) after:DATE`
 
 All four searches include `includeSpamTrash=True` so replies mis-classified by Gmail as spam are not missed.
 
 ## Auto-classification rules
 
-Before calling the Claude API, the script checks each sender:
-- `mailer-daemon` or `postmaster` local part → **Bounce / Delivery Failure** (no API call)
-- local part ending in `-owner` → **Bounce / Delivery Failure** (no API call)
-- All other emails → sent to Claude in batches
+The script checks each sender before writing to the pending file:
+- `mailer-daemon` or `postmaster` local part → **Bounce / Delivery Failure** (no manual step)
+- local part ending in `-owner` → **Bounce / Delivery Failure** (no manual step)
+- All other emails → written to `output/pending_for_claude.txt` as **Pending**
 
 NDR bodies are also scanned with a regex to extract failed recipient addresses. Any listserv address found in an NDR body is reclassified from No Reply → Bounce (excluding `MY_EMAIL` and `CC_EMAILS`).
 
@@ -133,6 +138,7 @@ NDR bodies are also scanned with a regex to extract failed recipient addresses. 
 | Bounce / Delivery Failure | Light red | Address failed or NDR received |
 | No Reply | Light grey | Listserv address with no reply found |
 | Unverified | Very light grey | Not found in sent records (rare) |
+| Pending | Light yellow | Awaiting manual classification via Claude.ai |
 
 ## Excel output structure
 
@@ -170,14 +176,14 @@ Open in Chrome → Ctrl+P → Save as PDF.
 ## Dependencies
 
 All pinned in `requirements.txt`. Key packages:
-- `anthropic` — Claude API client
 - `google-api-python-client`, `google-auth-oauthlib`, `google-auth-httplib2` — Gmail API
 - `openpyxl` — Excel export
 
 ## Known behaviour notes
 
-- `*-owner@lists.*` senders are now auto-tagged as Bounce / Delivery Failure (not sent to Claude).
+- `*-owner@lists.*` senders are auto-tagged as Bounce / Delivery Failure (never sent to pending file).
 - Out-of-office auto-replies are classified by Claude as **Auto-Reply** (separate from hard bounces).
 - ~700 No Reply rows out of 815 listserv addresses is normal — ~85% non-response is expected for cold academic blasts.
 - `get_sent_recipients()` checks the Sent folder for the blast, but Gmail does not expose BCC in sent copies — the function always returns an empty set; the Unverified category is effectively unused.
 - The `institution` column is extracted from the sender's email domain; free domains (gmail.com, yahoo.com, etc.) trigger a regex scan of the email body instead.
+- Anthropic API classification has been removed. Classification is now done by uploading `pending_for_claude.xlsx` to the Science Corps Classification project in Claude.ai. Claude generates and returns the completed color-coded `fellowship_replies.xlsx` as a file download.

@@ -32,6 +32,7 @@ MY_EMAIL                = "pnayga@science-corps.org"
 CC_EMAILS               = {
     "ccorry@science-corps.org",
     "cjellareroma@gmail.com",
+    "ereroma@science-corps.org"
 }
 
 OUTPUT_FOLDER           = "output"
